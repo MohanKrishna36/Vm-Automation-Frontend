@@ -1,0 +1,208 @@
+:root {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --card: #ffffff;
+  --border: #e5e7eb;
+
+  --text: #111827;
+  --muted: #6b7280;
+
+  --primary: #22c55e;
+  --accent: #3b82f6;
+  --danger: #ef4444;
+
+  --vm-bg: #eef2ff;       /* blue for individual VM cards */
+  --welcome-bg: #020617;  /* dark console */
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.app {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 240px;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar h2 {
+  color: var(--primary);
+  margin-bottom: 30px;
+}
+
+.nav-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  color: #cbd5f5;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  background: #1e293b;
+  color: white;
+}
+
+.logout {
+  margin-top: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--danger);
+  color: white;
+  text-align: center;
+  cursor: pointer;
+}
+
+/* Main */
+.main {
+  flex: 1;
+  padding: 32px;
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+}
+
+/* Cards */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+}
+
+/* VM list container (neutral) */
+.card.vm-container {
+  background: var(--card);
+}
+
+/* Individual VM cards (blue) */
+.card.vm-item {
+  background: var(--vm-bg);
+  cursor: pointer;
+  margin-top: 12px;
+}
+
+.card.vm-item:hover {
+  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+}
+
+/* Inputs */
+input {
+  width: 100%;
+  padding: 12px;
+  margin-top: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* Buttons */
+button {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button.primary { background: var(--primary); color: white; }
+button.accent { background: var(--accent); color: white; }
+button.danger { background: var(--danger); color: white; }
+
+/* Spacing helpers */
+.mt-12 { margin-top: 12px; }
+.mt-20 { margin-top: 20px; }
+.mt-24 { margin-top: 24px; }
+
+/* Console / Welcome */
+.console {
+  background: var(--welcome-bg);
+  color: #e5e7eb;
+  border-radius: 14px;
+  padding: 16px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+  overflow-y: auto;
+}
+
+.console-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.red { background: #ff5f57; }
+.yellow { background: #febc2e; }
+.green { background: #28c840; }
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.status-label {
+  color: var(--muted);
+}
+
+.status-value {
+  font-weight: 600;
+}
+
+button.warn {
+  background: #f59e0b;
+  color: white;
+}
+
+/* ---------- LOADING SPINNER ---------- */
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 3px solid #c7d2fe;
+  border-top: 3px solid #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  display: inline-block;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- DISABLED BUTTON ---------- */
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---------- CONSOLE STATUS ---------- */
+.console-status {
+  color: #94a3b8;
+  margin-top: 4px;
+  font-style: italic;
+}
+
