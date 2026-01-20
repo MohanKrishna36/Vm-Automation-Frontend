@@ -8,7 +8,7 @@ export default function Reports() {
     {
       jobId: "JOB-10231",
       vm: "alpine-vm-01",
-      user: "raghavendra",
+      user: "mohankrishan",
       command: "apk add --no-cache htop",
       status: "SUCCESS",
       submittedAt: "2026-01-20 18:10:21",
@@ -17,7 +17,7 @@ export default function Reports() {
     {
       jobId: "JOB-10232",
       vm: "alpine-vm-02",
-      user: "raghavendra",
+      user: "raghasri",
       command: "cat /etc/os-release",
       status: "SUCCESS",
       submittedAt: "2026-01-20 18:11:04",
@@ -26,7 +26,7 @@ export default function Reports() {
     {
       jobId: "JOB-10233",
       vm: "alpine-vm-03",
-      user: "sir",
+      user: "neelima",
       command: "apk update",
       status: "FAILED",
       submittedAt: "2026-01-20 18:12:10",
@@ -35,7 +35,7 @@ export default function Reports() {
     {
       jobId: "JOB-10234",
       vm: "alpine-vm-01",
-      user: "sir",
+      user: "neelima",
       command: "sleep 5; echo done",
       status: "SUCCESS",
       submittedAt: "2026-01-20 18:13:02",
