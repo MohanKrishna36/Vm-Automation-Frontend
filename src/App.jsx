@@ -13,7 +13,7 @@ export default function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
-        <Route path="/vm/:host" element={<VM />} />
+        <Route path="/vm/:vmId" element={<VM />} />
         <Route path="/reports" element={<Reports />} />
       </Routes>
     </BrowserRouter>

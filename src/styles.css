@@ -145,6 +145,19 @@ button.danger { background: var(--danger); color: white; }
   overflow-y: auto;
 }
 
+.console-body {
+  height: 100vh;              /* fixed terminal height */
+  overflow-y: auto;           /* ✅ SCROLL HERE */
+  overflow-x: hidden;
+
+  padding: 10px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px;
+
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .console-header {
   display: flex;
   gap: 8px;

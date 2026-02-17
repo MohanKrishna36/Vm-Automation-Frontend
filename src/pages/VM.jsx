@@ -1,5 +1,6 @@
-import { useParams } from "react-router-dom";
-import { useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+
 import api from "../api";
 
 const packages = [
@@ -9,53 +10,134 @@ const packages = [
   "make","gcc","g++"
 ];
 
+function stripAnsi(text) {
+  if (!text) return "";
+
+  return text
+    // Remove ANSI escape sequences
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    // Remove other control chars except newline & tab
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
 export default function VM() {
-  const { host } = useParams();
-  const [cmd, setCmd] = useState("");
+  const { vmId, host } = useParams(); // vmId is IMPORTANT
+  const navigate = useNavigate();
+  const consoleRef = useRef(null);
+
+  const socketRef = useRef(null);
+
   const [logs, setLogs] = useState([]);
-  const [running, setRunning] = useState(false);
+  const [cmd, setCmd] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const clearTerminal = () => {
+  setLogs([]);
+};
+  // 🔐 auth guard
+  useEffect(() => {
+    if (!localStorage.getItem("token")) {
+      alert("Please login first");
+      navigate("/login");
+    }
+  }, [navigate]);
+  // console effect
+  useEffect(() => {
+  const el = consoleRef.current;
+  if (!el) return;
 
-  if (!localStorage.getItem("token")) {
-    alert("Please login first");
-    window.location.href = "/login";
-    return null;
+  const isAtBottom =
+    el.scrollHeight - el.scrollTop <= el.clientHeight + 40;
+
+  if (isAtBottom) {
+    el.scrollTop = el.scrollHeight;
   }
+}, [logs]);
+  // 🚀 create session + open websocket ONCE
+  useEffect(() => {
+    let ws;
 
-  const run = async (command) => {
-    if (!command) return;
+    const startSession = async () => {
+      try {
+        // 1️⃣ create session
+        const res = await api.post(`/session/create/${vmId}`);
+        const { session_id } = res.data;
 
-    setRunning(true);
-    setLogs(l => [...l, `$ ${command}`, "⏳ Running..."]);
+        // 2️⃣ open websocket
+        ws = new WebSocket(`ws://localhost:8000/session/ws/${session_id}`);
+        socketRef.current = ws;
 
-    try {
-      const res = await api.post(
-        `/vm/command?host=${host}&command=${encodeURIComponent(command)}`
-      );
+        ws.onopen = () => {
+          setConnected(true);
+          setLogs(["🟢 Connected to VM terminal"]);
+          setLoading(false);
+        };
 
-      setLogs(l => [
-        ...l.filter(x => x !== "⏳ Running..."),
-        res.data.output || "✔ Command executed"
-      ]);
-    } catch {
-      setLogs(l => [
-        ...l.filter(x => x !== "⏳ Running..."),
-        "⚠ Connection lost (VM rebooting or powered off)"
-      ]);
-    } finally {
-      setRunning(false);
+        // ws.onmessage = (e) => {
+        //   setLogs(prev => [...prev, e.data]);
+        // };
+
+        ws.onmessage = (e) => {
+        const clean = stripAnsi(e.data);
+        if (!clean.trim()) return;
+
+        setLogs(prev => [...prev, clean]);
+      };
+
+        ws.onerror = () => {
+          setLogs(prev => [...prev, "⚠ WebSocket error"]);
+        };
+
+        ws.onclose = () => {
+          setConnected(false);
+          setLogs(prev => [...prev, "🔴 Terminal disconnected"]);
+        };
+
+      } catch (err) {
+        alert("Failed to start VM session");
+        navigate("/dashboard");
+      }
+    };
+
+    startSession();
+
+    // 🧹 cleanup on page exit
+    return () => {
+      if (ws) ws.close();
+    };
+  }, [vmId, navigate]);
+
+  // ⌨️ send command
+  const sendCommand = (command) => {
+    if (!command || !socketRef.current || socketRef.current.readyState !== 1)
+      return;
+
+    setLogs(prev => [...prev, `$ ${command}`]);
+    socketRef.current.send(command + "\n");
+    setCmd("");
+  };
+
+  // 🔌 disconnect VM (explicit)
+  const disconnectVM = async () => {
+    if (window.confirm("Disconnect VM?")) {
+      try {
+        if (socketRef.current) socketRef.current.close();
+        await api.post("/vm/disconnect", { host });
+        navigate("/dashboard");
+      } catch {
+        alert("Failed to disconnect VM");
+      }
     }
   };
 
-  const disconnect = async () => {
-    await api.post("/vm/disconnect", { host });
-    window.location.href = "/dashboard";
-  };
+  if (loading) {
+    return <div className="app">Connecting to VM…</div>;
+  }
 
   return (
     <div className="app">
       <aside className="sidebar">
         <h2>{host}</h2>
-        <div className="nav-item" onClick={()=>window.location.href="/dashboard"}>
+        <div className="nav-item" onClick={() => navigate("/dashboard")}>
           ← Back
         </div>
       </aside>
@@ -65,49 +147,31 @@ export default function VM() {
           {/* STATUS */}
           <div className="card">
             <h3>VM Status</h3>
-
             <div className="status-row">
-              <span className="status-label">Connected</span>
-              <span className="status-value">Yes</span>
+              <span>Status</span>
+              <span>{connected ? "Connected" : "Disconnected"}</span>
             </div>
-
             <div className="status-row">
-              <span className="status-label">Owner</span>
-              <span className="status-value">You</span>
+              <span>Owner</span>
+              <span>You</span>
             </div>
-
             <div className="status-row">
-              <span className="status-label">Host</span>
-              <span className="status-value">{host}</span>
+              <span>Host</span>
+              <span>{host}</span>
             </div>
           </div>
 
           {/* SYSTEM OPS */}
           <div className="card mt-20">
             <h3>System Operations</h3>
-
             <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-              <button
-                className="warn"
-                disabled={running}
-                onClick={()=>{
-                  if (window.confirm("Reboot VM now?")) run("reboot");
-                }}
-              >
+              <button className="warn" onClick={()=>sendCommand("reboot")}>
                 Reboot VM
               </button>
-
-              <button
-                className="danger"
-                disabled={running}
-                onClick={()=>{
-                  if (window.confirm("Power off VM now?")) run("poweroff");
-                }}
-              >
+              <button className="danger" onClick={()=>sendCommand("poweroff")}>
                 Power Off VM
               </button>
-
-              <button className="accent" onClick={disconnect}>
+              <button className="accent" onClick={disconnectVM}>
                 Disconnect
               </button>
             </div>
@@ -116,42 +180,29 @@ export default function VM() {
           {/* PACKAGES */}
           <div className="card mt-20">
             <h3>Install Packages</h3>
-
             <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
               {packages.map(p => (
                 <button
                   key={p}
                   className="primary"
-                  disabled={running}
-                  onClick={()=>run(`apk add ${p}`)}
+                  onClick={()=>sendCommand(`apk add ${p}`)}
                 >
                   {p}
                 </button>
               ))}
             </div>
-
-            {running && (
-              <div className="console-status">
-                <span className="spinner"></span> Executing command…
-              </div>
-            )}
           </div>
 
           {/* CUSTOM COMMAND */}
           <div className="card mt-20">
             <h3>Run Command</h3>
-
             <input
               placeholder="e.g. ls -la"
               value={cmd}
-              onChange={e=>setCmd(e.target.value)}
+              onChange={e => setCmd(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && sendCommand(cmd)}
             />
-
-            <button
-              className="accent mt-12"
-              disabled={running}
-              onClick={()=>run(cmd)}
-            >
+            <button className="accent mt-12" onClick={()=>sendCommand(cmd)}>
               Execute
             </button>
           </div>
@@ -160,18 +211,31 @@ export default function VM() {
         {/* CONSOLE */}
         <div className="console">
           <div className="console-wrapper">
+
             <div className="console-header">
               <div className="dot red"></div>
               <div className="dot yellow"></div>
               <div className="dot green"></div>
             </div>
+            <button
+              className="clear-btn"
+              onClick={clearTerminal}
+              title="Clear terminal"
+            >
+              Clear
+            </button>
 
-            <div className="console-body">
-              {logs.map((l,i)=><div key={i}>{l}</div>)}
+            <div className="console-body" ref={consoleRef}>
+              {logs.map((l, i) => (
+                <div key={i}>{l}</div>
+              ))}
             </div>
+
           </div>
         </div>
+
       </main>
     </div>
   );
 }
+

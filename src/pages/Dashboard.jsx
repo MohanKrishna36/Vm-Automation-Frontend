@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api";
+import { useNavigate } from "react-router-dom";
 
 export default function Dashboard() {
   const [vms, setVMs] = useState([]);
@@ -8,6 +9,7 @@ export default function Dashboard() {
     username: "",
     password: ""
   });
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
 
   const token = localStorage.getItem("token");
@@ -148,7 +150,7 @@ export default function Dashboard() {
                     return;
                   }
 
-                  window.location.href = `/vm/${vm.host}`;
+                  window.location.href = `/vm/${vm.id}`;
                 }}
               >
                 <strong>{vm.host}</strong>
