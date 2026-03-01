@@ -26,6 +26,7 @@ export default function Login() {
 
   return (
     <div
+      className="login-page"
       style={{
         minHeight: "100vh",
         display: "flex",
@@ -54,7 +55,7 @@ export default function Login() {
           className="primary"
           disabled={loading}
           onClick={login}
-          style={{ width: "100%" }}
+          style={{ width: "100%", marginTop: "20px" }}
         >
           {loading ? <span className="spinner"></span> : "Login"}
         </button>

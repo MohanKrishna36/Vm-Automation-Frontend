@@ -1,4 +1,25 @@
 :root {
+  /* Optimized color system */
+  --primary-green: #22c55e;
+  --primary-blue: #3b82f6;
+  --primary-orange: #f59e0b;
+  --primary-red: #ef4444;
+  
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8fafc;
+  --bg-accent: #eff6ff;
+  
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  
+  --border-light: #e5e7eb;
+  --border-medium: #d1d5db;
+  
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.1);
+  --shadow-md: 0 4px 6px rgba(0,0,0,0.15);
+  --shadow-lg: 0 10px 25px rgba(0,0,0,0.25);
+
   --bg: #f4f6fb;
   --surface: #ffffff;
   --card: #ffffff;
@@ -7,12 +28,12 @@
   --text: #111827;
   --muted: #6b7280;
 
-  --primary: #22c55e;
-  --accent: #3b82f6;
-  --danger: #ef4444;
+  --primary: var(--primary-green);
+  --accent: var(--primary-blue);
+  --danger: var(--primary-red);
 
-  --vm-bg: #eef2ff;       /* blue for individual VM cards */
-  --welcome-bg: #020617;  /* dark console */
+  --vm-bg: #eef2ff;
+  --welcome-bg: #020617;
 }
 
 html, body, #root {
@@ -116,18 +137,38 @@ input {
   border: 1px solid var(--border);
 }
 
-/* Buttons */
+/* Optimized button system */
 button {
   padding: 10px 16px;
   border-radius: 8px;
   border: none;
   cursor: pointer;
   font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 button.primary { background: var(--primary); color: white; }
 button.accent { background: var(--accent); color: white; }
 button.danger { background: var(--danger); color: white; }
+button.warn { background: var(--primary-orange); color: white; }
+
+/* Override primary button color only for login and signup pages */
+.login-page button.primary,
+.signup-page button.primary {
+  background: #000000 !important;
+}
 
 /* Spacing helpers */
 .mt-12 { margin-top: 12px; }
@@ -182,41 +223,6 @@ button.danger { background: var(--danger); color: white; }
 
 .status-value {
   font-weight: 600;
-}
-
-button.warn {
-  background: #f59e0b;
-  color: white;
-}
-
-/* ---------- LOADING SPINNER ---------- */
-.spinner {
-  width: 18px;
-  height: 18px;
-  border: 3px solid #c7d2fe;
-  border-top: 3px solid #3b82f6;
-  border-radius: 50%;
-  animation: spin 0.9s linear infinite;
-  display: inline-block;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* ---------- DISABLED BUTTON ---------- */
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-/* ---------- CONSOLE STATUS ---------- */
-.console-status {
-  color: #94a3b8;
-  margin-top: 4px;
-  font-style: italic;
 }
 
 /* Reports layout: keep same grid but make it consistent */

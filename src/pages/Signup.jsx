@@ -20,6 +20,7 @@ export default function Signup() {
 
   return (
   <div
+    className="signup-page"
     style={{
       minHeight: "100vh",
       display: "flex",
@@ -48,7 +49,7 @@ export default function Signup() {
         className="primary"
         disabled={loading}
         onClick={signup}
-        style={{ width: "100%" }}
+        style={{ width: "100%", marginTop: "20px" }}
       >
         {loading ? <span className="spinner"></span> : "Create Account"}
       </button>

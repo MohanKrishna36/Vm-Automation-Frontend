@@ -1,51 +1,62 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { useVM } from "../contexts/VMContext";
 
 export default function Reports() {
   const token = localStorage.getItem("token");
-
-  // Dummy data (UI preview)
-  const runs = [
-    {
-      jobId: "JOB-10231",
-      vm: "alpine-vm-01",
-      user: "mohankrishan",
-      command: "apk add --no-cache htop",
-      status: "SUCCESS",
-      submittedAt: "2026-01-20 18:10:21",
-      metrics: { ttfoMs: 180, connectMs: 420, execMs: 6450, totalMs: 7050, exitCode: 0 },
-    },
-    {
-      jobId: "JOB-10232",
-      vm: "alpine-vm-02",
-      user: "raghasri",
-      command: "cat /etc/os-release",
-      status: "SUCCESS",
-      submittedAt: "2026-01-20 18:11:04",
-      metrics: { ttfoMs: 95, connectMs: 380, execMs: 120, totalMs: 540, exitCode: 0 },
-    },
-    {
-      jobId: "JOB-10233",
-      vm: "alpine-vm-03",
-      user: "neelima",
-      command: "apk update",
-      status: "FAILED",
-      submittedAt: "2026-01-20 18:12:10",
-      metrics: { ttfoMs: 260, connectMs: 510, execMs: 3500, totalMs: 4250, exitCode: 1 },
-    },
-    {
-      jobId: "JOB-10234",
-      vm: "alpine-vm-01",
-      user: "neelima",
-      command: "sleep 5; echo done",
-      status: "SUCCESS",
-      submittedAt: "2026-01-20 18:13:02",
-      metrics: { ttfoMs: 40, connectMs: 120, execMs: 5100, totalMs: 5320, exitCode: 0 },
-    },
-  ];
+  const { sessionReports } = useVM();
+  
+  // Transform session reports to match existing UI structure
+  const runs = useMemo(() => {
+    return sessionReports.map(report => {
+      // Determine actual status based on failed commands
+      const hasFailures = report.failedCommands > 0;
+      const successRate = parseFloat(report.successRate);
+      
+      let actualStatus;
+      if (report.totalCommands === 0) {
+        actualStatus = "SUCCESS"; // No commands = successful by default
+      } else if (successRate >= 90) {
+        actualStatus = "SUCCESS";
+      } else if (successRate >= 50) {
+        actualStatus = "PARTIAL";
+      } else {
+        actualStatus = "FAILED";
+      }
+      
+      return {
+        jobId: report.sessionId,
+        vm: report.vmHost,
+        user: "current-user", // Could be enhanced with actual user data
+        command: report.commands.length > 0 ? report.commands[report.commands.length - 1].command : "No commands",
+        status: actualStatus,
+        submittedAt: new Date(report.generatedAt).toLocaleString(),
+        sessionName: report.sessionName, // Add session name
+        metrics: {
+          ttfoMs: 100, // Placeholder - would need actual timing data
+          connectMs: 200,
+          execMs: parseInt(report.averageExecutionTime) || 500,
+          totalMs: report.duration,
+          exitCode: hasFailures ? 1 : 0
+        },
+        // Extended metrics for detailed view
+        sessionDetails: {
+          totalCommands: report.totalCommands,
+          successfulCommands: report.successfulCommands,
+          failedCommands: report.failedCommands,
+          successRate: report.successRate,
+          sessionDuration: report.duration,
+          startTime: report.startTime,
+          endTime: report.endTime,
+          allCommands: report.commands,
+          sessionName: report.sessionName // Add session name to details
+        }
+      };
+    });
+  }, [sessionReports]);
 
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("ALL");
-  const [selected, setSelected] = useState(runs[0]);
+  const [selected, setSelected] = useState(null); // Fix: Don't select first item when no reports exist
 
   const filteredRuns = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -55,15 +66,16 @@ export default function Reports() {
         r.jobId.toLowerCase().includes(q) ||
         r.vm.toLowerCase().includes(q) ||
         r.user.toLowerCase().includes(q) ||
-        r.command.toLowerCase().includes(q);
-
+        r.command.toLowerCase().includes(q) ||
+        r.sessionName?.toLowerCase().includes(q); // Add session name to search
+      
       const okStatus = statusFilter === "ALL" ? true : r.status === statusFilter;
       return okQuery && okStatus;
     });
-  }, [query, statusFilter]);
+  }, [query, statusFilter, runs]); // Add runs dependency
 
   const stats = useMemo(() => {
-    const list = filteredRuns.length ? filteredRuns : runs;
+    const list = filteredRuns;
 
     const avg = (arr) => arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
 
@@ -81,8 +93,14 @@ export default function Reports() {
   const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`);
 
   const StatusBadge = ({ status }) => {
-    const cls = status === "SUCCESS" ? "badge badge-success" : "badge badge-failed";
-    return <span className={cls}>{status}</span>;
+    if (status === "SUCCESS") {
+      return <span className="badge badge-success">{status}</span>;
+    } else if (status === "FAILED") {
+      return <span className="badge badge-failed">{status}</span>;
+    } else if (status === "PARTIAL") {
+      return <span className="badge" style={{ backgroundColor: "#f59e0b", color: "white" }}>{status}</span>;
+    }
+    return <span className="badge">{status}</span>;
   };
 
   return (
@@ -112,7 +130,7 @@ export default function Reports() {
         <div className="card">
           <h2>Reports</h2>
           <p className="muted">
-            Showing execution metrics (TTFO, total time, throughput, success rate). Dummy data preview.
+            Showing VM session performance metrics. Reports are automatically generated when you disconnect from a VM.
           </p>
 
           {/* Summary cards */}
@@ -152,6 +170,7 @@ export default function Reports() {
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="ALL">All</option>
               <option value="SUCCESS">Success</option>
+              <option value="PARTIAL">Partial</option>
               <option value="FAILED">Failed</option>
             </select>
           </div>
@@ -159,6 +178,7 @@ export default function Reports() {
           {/* Runs table */}
           <div className="runs-table mt-20">
             <div className="runs-head">
+              <div>Session</div>
               <div>Job</div>
               <div>VM</div>
               <div>Command</div>
@@ -173,6 +193,7 @@ export default function Reports() {
                 className={`runs-row ${selected?.jobId === r.jobId ? "selected" : ""}`}
                 onClick={() => setSelected(r)}
               >
+                <div className="mono">{r.sessionName || 'Unnamed'}</div>
                 <div className="mono">{r.jobId}</div>
                 <div>{r.vm}</div>
                 <div className="truncate" title={r.command}>
@@ -186,9 +207,11 @@ export default function Reports() {
               </div>
             ))}
 
-            {!filteredRuns.length && (
-              <div className="muted mt-12">No report runs found.</div>
-            )}
+            {!filteredRuns.length && runs.length > 0 ? (
+              <div className="muted mt-12">No reports found matching your filters.</div>
+            ) : runs.length === 0 ? (
+              <div className="muted mt-12">No reports available. Start a VM session to generate reports.</div>
+            ) : null}
           </div>
         </div>
 
@@ -203,8 +226,13 @@ export default function Reports() {
             <>
               <h2>Run Details</h2>
               <p className="muted">
-                {selected.jobId} • {selected.vm}
+                {selected.sessionName || 'Unnamed Session'} • {selected.vm}
               </p>
+
+              <div className="detail-block mt-20">
+                <div className="detail-label">Session Name</div>
+                <div className="detail-value">{selected.sessionName || 'Unnamed Session'}</div>
+              </div>
 
               <div className="detail-block mt-20">
                 <div className="detail-label">Command</div>
@@ -230,29 +258,58 @@ export default function Reports() {
               </div>
 
               <div className="detail-block mt-24">
-                <div className="detail-label">Timing Breakdown</div>
+                <div className="detail-label">Session Performance</div>
                 <div className="timing-grid mt-12">
                   <div className="timing-card">
-                    <div className="stat-label">TTFO</div>
-                    <div className="stat-value">{fmtMs(selected.metrics.ttfoMs)}</div>
+                    <div className="stat-label">Total Commands</div>
+                    <div className="stat-value">{selected.sessionDetails?.totalCommands || 0}</div>
                   </div>
                   <div className="timing-card">
-                    <div className="stat-label">SSH Connect</div>
-                    <div className="stat-value">{fmtMs(selected.metrics.connectMs)}</div>
+                    <div className="stat-label">Success Rate</div>
+                    <div className="stat-value">{selected.sessionDetails?.successRate || 0}%</div>
                   </div>
                   <div className="timing-card">
-                    <div className="stat-label">Execution</div>
-                    <div className="stat-value">{fmtMs(selected.metrics.execMs)}</div>
+                    <div className="stat-label">Session Duration</div>
+                    <div className="stat-value">{fmtMs(selected.sessionDetails?.sessionDuration || 0)}</div>
                   </div>
                   <div className="timing-card">
-                    <div className="stat-label">Total</div>
-                    <div className="stat-value">{fmtMs(selected.metrics.totalMs)}</div>
+                    <div className="stat-label">Avg Command Time</div>
+                    <div className="stat-value">{fmtMs(selected.sessionDetails?.sessionDuration / (selected.sessionDetails?.totalCommands || 1))}</div>
                   </div>
                 </div>
               </div>
 
-              <div className="muted mt-20">
-                Note: This is dummy UI data. In real implementation, metrics will be computed using backend timestamps.
+              <div className="detail-block mt-20">
+                <div className="detail-label">Command History</div>
+                <div className="detail-value" style={{ maxHeight: "200px", overflowY: "auto", fontSize: "12px" }}>
+                  {selected.sessionDetails?.allCommands?.map((cmd, idx) => (
+                    <div key={idx} style={{ padding: "4px 0", borderBottom: "1px solid #f3f4f6" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <span className="mono">{cmd.command}</span>
+                        <span style={{ color: cmd.success ? "#22c55e" : "#ef4444" }}>
+                          {cmd.success ? "✓" : "✗"} {fmtMs(cmd.executionTime)}
+                        </span>
+                      </div>
+                      <div className="muted" style={{ fontSize: "11px" }}>
+                        {new Date(cmd.timestamp).toLocaleTimeString()}
+                      </div>
+                    </div>
+                  )) || <div className="muted">No commands recorded</div>}
+                </div>
+              </div>
+
+              <div className="detail-block mt-20">
+                <div className="detail-label">Session Timeline</div>
+                <div className="detail-grid mt-12">
+                  <div className="detail-item">
+                    <div className="detail-label">Started At</div>
+                    <div className="detail-value">{selected.sessionDetails?.startTime ? new Date(selected.sessionDetails.startTime).toLocaleString() : "N/A"}</div>
+                  </div>
+                  <div className="detail-item">
+                    <div className="detail-label">Ended At</div>
+                    <div className="detail-value">{selected.sessionDetails?.endTime ? new Date(selected.sessionDetails.endTime).toLocaleString() : "N/A"}</div>
+                  </div>
+                </div>
               </div>
             </>
           )}

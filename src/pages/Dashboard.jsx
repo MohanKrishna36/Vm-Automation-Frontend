@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api";
 import { useNavigate } from "react-router-dom";
+import { useVM } from "../contexts/VMContext";
 
 export default function Dashboard() {
   const [vms, setVMs] = useState([]);
@@ -11,6 +12,7 @@ export default function Dashboard() {
   });
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const { hasActiveSession } = useVM();
 
   const token = localStorage.getItem("token");
 
@@ -27,6 +29,11 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadVMs();
+    
+    // Refresh VM status every 10 seconds
+    const interval = setInterval(loadVMs, 10000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   /* ---------- CONNECT VM ---------- */
@@ -158,11 +165,11 @@ export default function Dashboard() {
                 <div style={{ marginTop: 6 }}>
                   {vm.is_busy ? (
                     <span style={{ color: "#f59e0b" }}>
-                      Busy
+                      🔒 Busy (Yours)
                     </span>
                   ) : (
                     <span style={{ color: "#22c55e" }}>
-                      Available
+                      ✅ Available
                     </span>
                   )}
                 </div>
