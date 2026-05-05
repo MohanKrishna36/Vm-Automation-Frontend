@@ -244,19 +244,7 @@ export default function MultiVM() {
       const total = res.data.vm_count;
       addToast(`${ok}/${total} VMs: ${command.slice(0, 40)}${command.length > 40 ? "..." : ""}`, ok === total ? "ok" : ok === 0 ? "err" : "warn");
 
-      // Save to history for each VM
-      try {
-        await Promise.all(res.data.results.map(r => {
-          const vm = vmList.find(v => v.host === r.host);
-          if (!vm) return Promise.resolve();
-          return api.post("/history/save", {
-            vm_id: vm.id, vm_host: r.host, command,
-            output: r.output || "", error: r.error || "",
-            success: r.success, execution_time_ms: null, category: "raw", action: "broadcast",
-          }).catch(() => {});
-        }));
-        if (showHistory) loadHistory();
-      } catch { /* history save is best-effort */ }
+      if (showHistory) loadHistory();
 
     } catch (err) {
       setLiveProgress(null);
