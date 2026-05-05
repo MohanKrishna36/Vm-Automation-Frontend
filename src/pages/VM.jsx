@@ -969,7 +969,24 @@ export default function VM() {
               if (msg.hostname) setVmHostname(msg.hostname);
 
               if (msg.output) {
-                setLogs(prev => [...prev, msg.output]);
+                // Clean apk install output — replace raw download junk with a summary
+                const rawCmd = (msg.raw_command || "").trim();
+                let displayOutput = msg.output;
+                if (/^apk\s+add\s+/i.test(rawCmd)) {
+                  const pkgMatch = rawCmd.match(/^apk\s+add\s+(.+)/i);
+                  const pkgName = pkgMatch ? pkgMatch[1].trim() : "package";
+                  if (msg.success) {
+                    // Extract "Installing X (version)" lines
+                    const installed = [...msg.output.matchAll(/Installing (\S+) \(([^)]+)\)/g)].map(m => `  ${m[1]} (${m[2]})`);
+                    displayOutput = installed.length > 0
+                      ? `OK: Installed successfully\n${installed.join("\n")}`
+                      : `OK: ${pkgName} installed`;
+                  } else {
+                    const errLine = msg.output.split("\n").find(l => /error|ERROR|not found|APKINDEX/i.test(l)) || msg.output.slice(0, 120);
+                    displayOutput = `FAILED: ${errLine}`;
+                  }
+                }
+                setLogs(prev => [...prev, displayOutput]);
               }
               if (msg.error && !msg.output) {
                 setLogs(prev => [...prev, `Error: ${msg.error}`]);

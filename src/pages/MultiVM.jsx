@@ -105,6 +105,16 @@ export default function MultiVM() {
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // -- Session name --
+  const [sessionName, setSessionName] = useState("");
+  const [showNameInput, setShowNameInput] = useState(false);
+
+  // -- Release/disconnect --
+  const [releasing, setReleasing] = useState(false);
+
+  // -- Live broadcast progress (per VM) --
+  const [liveProgress, setLiveProgress] = useState(null); // { command, vms: { [id]: "pending"|"running"|{ok,output,error} } }
+
   // -- Alerts --
   const [alertCount, setAlertCount] = useState(0);
 
@@ -128,6 +138,8 @@ export default function MultiVM() {
       const filtered = res.data.filter(v => vmIds.includes(v.id) && v.locked_by_me);
       if (filtered.length === 0) { navigate("/dashboard"); return; }
       setVms(filtered);
+      // Persist this multi-VM group so dashboard can offer "Rejoin"
+      localStorage.setItem("multiVmSession", JSON.stringify({ vmIds: filtered.map(v => v.id), sessionName: "" }));
       const init = {};
       filtered.forEach(vm => {
         init[vm.id] = { metrics: null, metricsHistory: [], metricsLoading: false, metricsError: null, cmd: "", cmdOut: null, cmdLoading: false };
@@ -211,16 +223,43 @@ export default function MultiVM() {
     setBroadcastLoading(true);
     setBroadcastResults(null);
     setBroadcastExpandedHost(null);
+
+    // Show live per-VM "running" state immediately
+    const vmList = vmsRef.current;
+    const initVms = {};
+    vmList.forEach(v => { initVms[v.id] = "running"; });
+    setLiveProgress({ command, vms: initVms });
+
     try {
-      const res = await api.post("/vm/broadcast", { vm_ids: vmsRef.current.map(v => v.id), command });
+      const res = await api.post("/vm/broadcast", { vm_ids: vmList.map(v => v.id), command });
+
+      // Populate results per VM
+      const finalVms = {};
+      res.data.results.forEach(r => { finalVms[r.vm_id] = { ok: r.success, output: r.output, error: r.error }; });
+      setLiveProgress({ command, vms: finalVms });
       setBroadcastResults(res.data);
+
       if (overrideCmd === undefined) setBroadcastCmd("");
       const ok = res.data.succeeded;
       const total = res.data.vm_count;
-      addToast(`${ok}/${total} VMs succeeded: ${command.slice(0, 40)}${command.length > 40 ? "..." : ""}`, ok === total ? "ok" : ok === 0 ? "err" : "warn");
-      setTimeout(() => broadcastResultsRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
-      if (showHistory) loadHistory();
+      addToast(`${ok}/${total} VMs: ${command.slice(0, 40)}${command.length > 40 ? "..." : ""}`, ok === total ? "ok" : ok === 0 ? "err" : "warn");
+
+      // Save to history for each VM
+      try {
+        await Promise.all(res.data.results.map(r => {
+          const vm = vmList.find(v => v.host === r.host);
+          if (!vm) return Promise.resolve();
+          return api.post("/history/save", {
+            vm_id: vm.id, vm_host: r.host, command,
+            output: r.output || "", error: r.error || "",
+            success: r.success, execution_time_ms: null, category: "raw", action: "broadcast",
+          }).catch(() => {});
+        }));
+        if (showHistory) loadHistory();
+      } catch { /* history save is best-effort */ }
+
     } catch (err) {
+      setLiveProgress(null);
       addToast(err.response?.data?.detail || "Broadcast failed", "err");
     } finally {
       setBroadcastLoading(false);
@@ -372,6 +411,90 @@ export default function MultiVM() {
     } catch { /* */ }
   };
 
+  // ── Release All VMs ────────────────────────────────────────────────────────
+  const releaseAllVMs = async () => {
+    if (!window.confirm(`Release all ${vms.length} VMs? This will disconnect them for other users.`)) return;
+    setReleasing(true);
+    try {
+      await Promise.all(vmsRef.current.map(vm => api.post("/vm/disconnect", { host: vm.host }).catch(() => {})));
+      localStorage.removeItem("multiVmSession");
+      addToast(`Released ${vms.length} VMs`, "ok");
+      navigate("/dashboard");
+    } catch (err) {
+      addToast(err.response?.data?.detail || "Release failed", "err");
+    } finally {
+      setReleasing(false);
+    }
+  };
+
+  // Track when this multi-VM page was opened (for report duration)
+  const sessionStartRef = useRef(Date.now());
+
+  // ── Disconnect + generate report + release ─────────────────────────────────
+  const disconnectAndRelease = async () => {
+    if (!window.confirm(`Disconnect, generate report, and release all ${vms.length} VMs?`)) return;
+    setReleasing(true);
+    const now = Date.now();
+    try {
+      // Fetch full history for all VMs
+      const allHistory = await Promise.all(
+        vmsRef.current.map(vm =>
+          api.get(`/history/?${new URLSearchParams({ limit: 500, offset: 0, vm_id: vm.id })}`).then(r => r.data).catch(() => [])
+        )
+      );
+      const combined = allHistory.flat().sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
+      const totalCmds = combined.length;
+      const successCmds = combined.filter(h => h.success).length;
+      const totalMs = combined.reduce((s, h) => s + (h.execution_time_ms || 0), 0);
+      const avgMs = totalCmds > 0 ? totalMs / totalCmds : 0;
+
+      // Use earliest history entry as session start, fallback to page-open time
+      const sessionStart = combined.length > 0
+        ? new Date(combined[0].executed_at + (combined[0].executed_at.endsWith("Z") ? "" : "Z")).getTime()
+        : sessionStartRef.current;
+      const duration = now - sessionStart;
+
+      const reportPayload = {
+        session_id: `MULTI-${vmsRef.current.map(v => v.id).join("-")}-${now}`,
+        vm_id: vmsRef.current[0].id,
+        session_name: sessionName.trim() || `Multi-VM (${vmsRef.current.map(v => v.host).join(", ")})`,
+        vm_host: vmsRef.current.map(v => v.host).join(", "),
+        start_time: new Date(sessionStart).toISOString(),
+        end_time: new Date(now).toISOString(),
+        duration: Math.max(duration, 1000),
+        total_commands: totalCmds,
+        successful_commands: successCmds,
+        failed_commands: totalCmds - successCmds,
+        success_rate: totalCmds > 0 ? parseFloat(((successCmds / totalCmds) * 100).toFixed(1)) : 0,
+        average_execution_time: parseFloat(avgMs.toFixed(0)),
+        commands: combined.map(h => ({
+          command: h.command,
+          timestamp: new Date(h.executed_at + (h.executed_at.endsWith("Z") ? "" : "Z")).getTime(),
+          executionTime: h.execution_time_ms || 0,
+          success: h.success,
+        })),
+      };
+
+      try {
+        await api.post("/reports/", reportPayload);
+        addToast(`Report saved: ${totalCmds} commands, ${successCmds} succeeded`, "ok");
+      } catch (reportErr) {
+        // If duplicate session_id, still continue with release
+        const detail = reportErr.response?.data?.detail || "";
+        if (!detail.includes("already exists")) {
+          addToast(`Report save failed: ${detail}`, "warn");
+        }
+      }
+
+      await Promise.all(vmsRef.current.map(vm => api.post("/vm/disconnect", { host: vm.host }).catch(() => {})));
+      localStorage.removeItem("multiVmSession");
+      navigate("/dashboard");
+    } catch (err) {
+      addToast(err.response?.data?.detail || "Disconnect failed", "err");
+      setReleasing(false);
+    }
+  };
+
   // ── Loading state ──────────────────────────────────────────────────────────
 
   if (vms.length === 0) {
@@ -405,6 +528,37 @@ export default function MultiVM() {
 
         <div className="nav-item" onClick={() => navigate("/dashboard")}>
           &larr; Dashboard
+        </div>
+
+        {/* Session name */}
+        <div style={{ marginTop: 10, padding: "10px 14px", background: "#0d1117", border: "1px solid #21262d", borderRadius: 8 }}>
+          <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Session Name</div>
+          {showNameInput ? (
+            <div style={{ display: "flex", gap: 4 }}>
+              <input value={sessionName} onChange={e => setSessionName(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") setShowNameInput(false); if (e.key === "Escape") setShowNameInput(false); }}
+                placeholder="e.g. Benchmark 3 VMs"
+                autoFocus
+                style={{ flex: 1, background: "#010409", border: "1px solid #30363d", borderRadius: 4, padding: "4px 8px", color: "#c9d1d9", fontSize: 11, outline: "none" }} />
+              <button onClick={() => setShowNameInput(false)} style={{ background: "#1c2a1c", border: "1px solid #238636", color: "#3fb950", borderRadius: 4, fontSize: 10, padding: "2px 8px", cursor: "pointer" }}>OK</button>
+            </div>
+          ) : (
+            <div onClick={() => setShowNameInput(true)} style={{ cursor: "pointer", color: sessionName ? "#c9d1d9" : "#484f58", fontSize: 12, padding: "2px 0" }}>
+              {sessionName || "Click to name session..."}
+            </div>
+          )}
+        </div>
+
+        {/* Release / Disconnect buttons — right below session name */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+          <button onClick={releaseAllVMs} disabled={releasing}
+            style={{ padding: "7px 12px", background: "#1c1505", border: "1px solid #78350f", color: "#f59e0b", borderRadius: 7, cursor: releasing ? "default" : "pointer", fontSize: 11, fontWeight: 600, opacity: releasing ? 0.6 : 1, textAlign: "left" }}>
+            {releasing ? "Releasing..." : `Release All ${vms.length} VMs`}
+          </button>
+          <button onClick={disconnectAndRelease} disabled={releasing}
+            style={{ padding: "7px 12px", background: "#1c0a0a", border: "1px solid #7f1d1d", color: "#f87171", borderRadius: 7, cursor: releasing ? "default" : "pointer", fontSize: 11, fontWeight: 600, opacity: releasing ? 0.6 : 1, textAlign: "left" }}>
+            {releasing ? "Working..." : "Disconnect + Report + Release"}
+          </button>
         </div>
 
         {/* VM list */}
@@ -447,13 +601,20 @@ export default function MultiVM() {
             </div>
           </div>
         )}
+
       </aside>
 
       {/* ── MAIN ── */}
-      <main className="main" style={{ flexDirection: "column", gap: 16, overflowY: "auto", alignItems: "stretch" }}>
+      {/* Layout: 4-col grid (each unit = 25%). Rows:
+            1) Broadcast      — col 1-4 (full)
+            2) InstallPkg     — col 1-3  |  SysOps   — col 3-4  (stretch to equal height)
+            3) Workflow       — col 1-3  |  Jobs      — col 3-4  (stretch to equal height)
+            4) VM cards       — col 1-4 (full, inner flex-wrap)  above Command History
+            5) CmdHistory     — col 1-4 (full)                                          */}
+      <main className="main" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, overflowY: "auto", alignItems: "start" }}>
 
-        {/* ── BROADCAST COMMAND ── */}
-        <div className="card" style={DC}>
+        {/* ── BROADCAST COMMAND ── Row 1: full width */}
+        <div className="card" style={{ ...DC, gridColumn: "1 / -1", gridRow: "1" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
             <h3 style={{ margin: 0, color: "#e6edf3" }}>Broadcast Command</h3>
             <span style={{ fontSize: 10, color: "#f59e0b", background: "#1a1205", border: "1px solid #78350f", borderRadius: 10, padding: "2px 9px" }}>
@@ -487,34 +648,53 @@ export default function MultiVM() {
             ))}
           </div>
 
-          {/* Broadcast results */}
-          {broadcastResults && (
+          {/* Live per-VM progress panel */}
+          {liveProgress && (
             <div ref={broadcastResultsRef} style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #21262d" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <span style={{ fontSize: 12, color: "#e6edf3", fontWeight: 600 }}>Results</span>
-                <span style={{ fontSize: 11, color: broadcastResults.succeeded === broadcastResults.vm_count ? "#10b981" : "#f59e0b" }}>
-                  {broadcastResults.succeeded}/{broadcastResults.vm_count} succeeded
+                <span style={{ fontSize: 12, color: "#e6edf3", fontWeight: 600 }}>
+                  {broadcastLoading ? "Running on all VMs..." : "Results"}
                 </span>
-                <code style={{ fontSize: 10, color: "#484f58" }}>$ {broadcastResults.command}</code>
-                <button onClick={() => setBroadcastResults(null)}
+                {!broadcastLoading && broadcastResults && (
+                  <span style={{ fontSize: 11, color: broadcastResults.succeeded === broadcastResults.vm_count ? "#10b981" : "#f59e0b" }}>
+                    {broadcastResults.succeeded}/{broadcastResults.vm_count} succeeded
+                  </span>
+                )}
+                <code style={{ fontSize: 10, color: "#484f58" }}>$ {liveProgress.command}</code>
+                <button onClick={() => { setLiveProgress(null); setBroadcastResults(null); }}
                   style={{ marginLeft: "auto", background: "none", border: "none", color: "#484f58", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>&times;</button>
               </div>
-              {broadcastResults.results.map(r => (
-                <div key={r.host} style={{ marginBottom: 6, borderRadius: 6, overflow: "hidden", border: `1px solid ${r.success ? "#065f46" : "#7f1d1d"}` }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: r.success ? "#051a12" : "#1c0a0a", cursor: "pointer" }}
-                    onClick={() => setBroadcastExpandedHost(prev => prev === r.host ? null : r.host)}>
-                    <span style={{ color: r.success ? "#10b981" : "#ef4444", fontSize: 11, fontWeight: 700 }}>{r.success ? "OK" : "ERR"}</span>
-                    <span style={{ color: "#e6edf3", fontSize: 11, fontFamily: "monospace", flex: 1 }}>{r.host}</span>
-                    <span style={{ fontSize: 9, color: "#484f58" }}>{broadcastExpandedHost === r.host ? "hide" : "show"}</span>
+              {vms.map(vm => {
+                const st = liveProgress.vms[vm.id];
+                const isRunning = st === "running";
+                const isDone = st && typeof st === "object";
+                const ok = isDone && st.ok;
+                return (
+                  <div key={vm.id} style={{ marginBottom: 6, borderRadius: 6, overflow: "hidden", border: `1px solid ${isRunning ? "#1d4ed8" : ok ? "#065f46" : isDone ? "#7f1d1d" : "#21262d"}` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: isRunning ? "#0d1f33" : ok ? "#051a12" : isDone ? "#1c0a0a" : "#0d1117", cursor: isDone ? "pointer" : "default" }}
+                      onClick={() => isDone && setBroadcastExpandedHost(prev => prev === vm.host ? null : vm.host)}>
+                      {isRunning ? (
+                        <span style={{ color: "#58a6ff", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 5 }}>
+                          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#58a6ff", animation: "pulse 1s infinite" }} />
+                          RUNNING
+                        </span>
+                      ) : isDone ? (
+                        <span style={{ color: ok ? "#10b981" : "#ef4444", fontSize: 11, fontWeight: 700 }}>{ok ? "✓ OK" : "✗ FAIL"}</span>
+                      ) : (
+                        <span style={{ color: "#484f58", fontSize: 11 }}>PENDING</span>
+                      )}
+                      <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", flex: 1, fontWeight: 600 }}>{vm.host}</span>
+                      {isDone && <span style={{ fontSize: 9, color: "#484f58" }}>{broadcastExpandedHost === vm.host ? "hide" : "show output"}</span>}
+                    </div>
+                    {isDone && broadcastExpandedHost === vm.host && (
+                      <pre style={{ background: "#010409", margin: 0, padding: "8px 12px", fontSize: 10, color: ok ? "#8b949e" : "#f87171", maxHeight: 180, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                        {st.error && !st.output ? st.error : st.output || "(no output)"}
+                      </pre>
+                    )}
                   </div>
-                  {broadcastExpandedHost === r.host && (
-                    <pre style={{ background: "#010409", margin: 0, padding: "8px 12px", fontSize: 10, color: r.success ? "#8b949e" : "#f87171", maxHeight: 150, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                      {r.error || r.output || "(no output)"}
-                    </pre>
-                  )}
-                </div>
-              ))}
-              {broadcastResults.skipped?.length > 0 && (
+                );
+              })}
+              {broadcastResults?.skipped?.length > 0 && (
                 <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 8, padding: "8px 12px", background: "#1c1505", border: "1px solid #78350f", borderRadius: 6 }}>
                   Skipped {broadcastResults.skipped.length}: {broadcastResults.skipped.map(s => s.host || `VM #${s.vm_id}`).join(", ")}
                 </div>
@@ -523,13 +703,13 @@ export default function MultiVM() {
           )}
         </div>
 
-        {/* ── SYSTEM OPERATIONS ── */}
-        <div className="card" style={DC}>
-          <h3 style={{ margin: "0 0 8px", color: "#e6edf3" }}>System Operations</h3>
-          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 14 }}>
-            These actions run on all {vms.length} VMs simultaneously.
+        {/* ── SYSTEM OPERATIONS ── Row 2: right half */}
+        <div className="card" style={{ ...DC, padding: "14px 16px", gridColumn: "3 / 5", gridRow: "2", alignSelf: "stretch" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <h3 style={{ margin: 0, color: "#e6edf3" }}>System Operations</h3>
+            <span style={{ fontSize: 10, color: "#6b7280" }}>runs on all {vms.length} VMs</span>
           </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="warn" onClick={() => { if (window.confirm(`Reboot all ${vms.length} VMs?`)) runBroadcast("reboot"); }}>
               Reboot All
             </button>
@@ -539,23 +719,25 @@ export default function MultiVM() {
           </div>
         </div>
 
-        {/* ── INSTALL PACKAGES ── */}
-        <div className="card" style={DC}>
-          <h3 style={{ margin: "0 0 8px", color: "#e6edf3" }}>Install Packages</h3>
-          <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 14 }}>
-            Installs the selected package on all {vms.length} VMs via apk.
+        {/* ── INSTALL PACKAGES ── Row 2: left half — must come first in DOM so grid places it col 1 */}
+        <div className="card" style={{ ...DC, padding: "14px 16px", gridColumn: "1 / 3", gridRow: "2", alignSelf: "stretch" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <h3 style={{ margin: 0, color: "#e6edf3" }}>Install Packages</h3>
+            <span style={{ fontSize: 10, color: "#6b7280" }}>via apk on all {vms.length} VMs</span>
           </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {packages.map(p => (
-              <button key={p} className="primary" onClick={() => runBroadcast(`apk add ${p}`)}>
+              <button key={p} className="primary" disabled={broadcastLoading}
+                style={{ fontSize: 11, padding: "4px 10px", opacity: broadcastLoading ? 0.5 : 1 }}
+                onClick={() => runBroadcast(`apk add ${p}`)}>
                 {p}
               </button>
             ))}
           </div>
         </div>
 
-        {/* ── WORKFLOW BUILDER ── */}
-        <div className="card" style={DC}>
+        {/* ── WORKFLOW BUILDER ── Row 3: left half */}
+        <div className="card" style={{ ...DC, gridColumn: "1 / 3", gridRow: "3", alignSelf: "stretch" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
             <h3 style={{ margin: 0, color: "#e6edf3" }}>Workflow Builder</h3>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -801,8 +983,8 @@ export default function MultiVM() {
           )}
         </div>
 
-        {/* ── JOB SCHEDULER ── */}
-        <div className="card" style={DC}>
+        {/* ── JOB SCHEDULER ── Row 3: right half */}
+        <div className="card" style={{ ...DC, gridColumn: "3 / 5", gridRow: "3", alignSelf: "stretch" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <h3 style={{ margin: 0, color: "#e6edf3" }}>Job Scheduler</h3>
@@ -993,8 +1175,8 @@ export default function MultiVM() {
           )}
         </div>
 
-        {/* ── COMMAND HISTORY ── */}
-        <div className="card" style={DC}>
+        {/* ── COMMAND HISTORY ── Row 4: right 25% */}
+        <div className="card" style={{ ...DC, gridColumn: "4 / 5", gridRow: "4", alignSelf: "stretch", overflowY: "auto" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showHistory ? 14 : 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <h3 style={{ margin: 0, color: "#e6edf3" }}>Command History</h3>
@@ -1083,8 +1265,8 @@ export default function MultiVM() {
           )}
         </div>
 
-        {/* ── VM CARDS GRID ── */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
+        {/* ── VM CARDS GRID ── Row 4: left 75% */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start", gridColumn: "1 / 4", gridRow: "4" }}>
           {vms.map(vm => {
             const state = vmStates[vm.id] || {};
             const { metrics, metricsHistory, metricsLoading, metricsError, cmd, cmdOut, cmdLoading } = state;

@@ -135,6 +135,16 @@ export default function Dashboard() {
 
   /* ---------- DERIVED ---------- */
   const myLockedVMs = vms.filter(vm => vm.locked_by_me);
+
+  // Multi-VM rejoin: check if a saved multi-VM session is still fully locked by us
+  const savedMultiSession = (() => {
+    try { return JSON.parse(localStorage.getItem("multiVmSession") || "null"); } catch { return null; }
+  })();
+  const rejoinVmIds = savedMultiSession?.vmIds || [];
+  const rejoinVms = rejoinVmIds.length >= 2
+    ? rejoinVmIds.map(id => vms.find(v => v.id === id)).filter(v => v?.locked_by_me)
+    : [];
+  const canRejoin = rejoinVms.length === rejoinVmIds.length && rejoinVmIds.length >= 2;
   const activeEvents = alertEvents.filter(e => !e.acknowledged);
 
   const fmtValue = (ev) => `${ev.current_value}${METRIC_UNITS[ev.metric] || ""}`;
@@ -207,6 +217,30 @@ export default function Dashboard() {
               {loading ? "Connecting..." : "Connect"}
             </button>
           </div>
+
+          {/* REJOIN MULTI-VM BANNER */}
+          {canRejoin && (
+            <div style={{ marginTop: 16, padding: "12px 16px", background: "#0d1f33", border: "1px solid #1d4ed8", borderRadius: 10, display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: "#58a6ff", fontWeight: 700, marginBottom: 2 }}>
+                  Active Multi-VM Session
+                </div>
+                <div style={{ fontSize: 11, color: "#8b949e" }}>
+                  {rejoinVms.map(v => v.host).join(", ")}
+                </div>
+              </div>
+              <button
+                onClick={() => navigate("/vm/multi", { state: { vmIds: rejoinVmIds } })}
+                style={{ padding: "6px 14px", background: "#1d4ed8", border: "none", color: "#fff", borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>
+                Rejoin Session
+              </button>
+              <button
+                onClick={() => { localStorage.removeItem("multiVmSession"); window.location.reload(); }}
+                style={{ padding: "6px 10px", background: "none", border: "1px solid #30363d", color: "#484f58", borderRadius: 6, cursor: "pointer", fontSize: 11, flexShrink: 0 }}>
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {/* VM LIST */}
           <div className="card vm-container mt-24">
