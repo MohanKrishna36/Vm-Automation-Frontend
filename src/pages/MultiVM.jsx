@@ -115,6 +115,9 @@ export default function MultiVM() {
   // -- Live broadcast progress (per VM) --
   const [liveProgress, setLiveProgress] = useState(null); // { command, vms: { [id]: "pending"|"running"|{ok,output,error} } }
 
+  // -- Per-VM operation selector --
+  const [sysOpModal, setSysOpModal] = useState(null); // null | { op: "reboot"|"poweroff", selected: Set<id> }
+
   // -- Alerts --
   const [alertCount, setAlertCount] = useState(0);
 
@@ -695,15 +698,41 @@ export default function MultiVM() {
         <div className="card" style={{ ...DC, padding: "14px 16px", gridColumn: "3 / 5", gridRow: "2", alignSelf: "stretch" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
             <h3 style={{ margin: 0, color: "#e6edf3" }}>System Operations</h3>
-            <span style={{ fontSize: 10, color: "#6b7280" }}>runs on all {vms.length} VMs</span>
+            <span style={{ fontSize: 10, color: "#6b7280" }}>all {vms.length} VMs or select specific</span>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button className="warn" onClick={() => { if (window.confirm(`Reboot all ${vms.length} VMs?`)) runBroadcast("reboot"); }}>
-              Reboot All
-            </button>
-            <button className="danger" onClick={() => { if (window.confirm(`Power off all ${vms.length} VMs?`)) runBroadcast("poweroff"); }}>
-              Power Off All
-            </button>
+
+          {/* ── Reboot row ── */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Reboot</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button className="warn" style={{ fontSize: 12 }}
+                onClick={() => { if (window.confirm(`Reboot all ${vms.length} VMs?`)) runBroadcast("reboot"); }}>
+                All {vms.length} VMs
+              </button>
+              {vms.map(vm => (
+                <button key={vm.id} style={{ fontSize: 11, padding: "4px 10px", background: "#1c1505", border: "1px solid #78350f", color: "#f59e0b", borderRadius: 6, cursor: "pointer" }}
+                  onClick={() => { if (window.confirm(`Reboot ${vm.host}?`)) api.post("/vm/broadcast", { vm_ids: [vm.id], command: "reboot" }).then(() => addToast(`Reboot sent to ${vm.host}`, "ok")).catch(e => addToast(e.response?.data?.detail || "Failed", "err")); }}>
+                  {vm.host}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ── Power Off row ── */}
+          <div>
+            <div style={{ fontSize: 11, color: "#8b949e", marginBottom: 5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Power Off</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button className="danger" style={{ fontSize: 12 }}
+                onClick={() => { if (window.confirm(`Power off all ${vms.length} VMs?`)) runBroadcast("poweroff"); }}>
+                All {vms.length} VMs
+              </button>
+              {vms.map(vm => (
+                <button key={vm.id} style={{ fontSize: 11, padding: "4px 10px", background: "#1c0a0a", border: "1px solid #7f1d1d", color: "#f87171", borderRadius: 6, cursor: "pointer" }}
+                  onClick={() => { if (window.confirm(`Power off ${vm.host}?`)) api.post("/vm/broadcast", { vm_ids: [vm.id], command: "poweroff" }).then(() => addToast(`Power-off sent to ${vm.host}`, "ok")).catch(e => addToast(e.response?.data?.detail || "Failed", "err")); }}>
+                  {vm.host}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
