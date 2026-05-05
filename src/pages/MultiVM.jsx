@@ -118,6 +118,9 @@ export default function MultiVM() {
   // -- Per-VM operation selector --
   const [sysOpModal, setSysOpModal] = useState(null); // null | { op: "reboot"|"poweroff", selected: Set<id> }
 
+  // -- Workflow output expand state --
+  const [wfExpandedStep, setWfExpandedStep] = useState(null); // step index or null
+
   // -- Alerts --
   const [alertCount, setAlertCount] = useState(0);
 
@@ -263,6 +266,7 @@ export default function MultiVM() {
     if (workflowItems.length === 0 || workflowRunning) return;
     setWorkflowRunning(true);
     setWorkflowResults([]);
+    setWfExpandedStep(null);
     const items = [...workflowItems];
     const results = [];
     for (let i = 0; i < items.length; i++) {
@@ -271,9 +275,9 @@ export default function MultiVM() {
       setWorkflowResults([...results]);
       try {
         const res = await api.post("/vm/broadcast", { vm_ids: vmsRef.current.map(v => v.id), command: item.cmd });
-        results[i] = { ...item, status: "done", success: res.data.succeeded === res.data.vm_count, succeeded: res.data.succeeded, total: res.data.vm_count };
+        results[i] = { ...item, status: "done", success: res.data.succeeded === res.data.vm_count, succeeded: res.data.succeeded, total: res.data.vm_count, vmOutputs: res.data.results };
       } catch {
-        results[i] = { ...item, status: "failed", success: false, succeeded: 0, total: vmsRef.current.length };
+        results[i] = { ...item, status: "failed", success: false, succeeded: 0, total: vmsRef.current.length, vmOutputs: [] };
       }
       setWorkflowResults([...results]);
     }
@@ -314,6 +318,7 @@ export default function MultiVM() {
     const steps = JSON.parse(wf.steps).map(s => ({ ...s, id: `${Date.now()}_${Math.random()}` }));
     setWorkflowItems(steps);
     setWorkflowResults([]);
+    setWfExpandedStep(null);
     setShowSavedPanel(false);
     api.post(`/workflows/${wf.id}/run`).catch(() => {});
     setWorkflowRunning(true);
@@ -324,9 +329,9 @@ export default function MultiVM() {
       setWorkflowResults([...results]);
       try {
         const res = await api.post("/vm/broadcast", { vm_ids: vmsRef.current.map(v => v.id), command: item.cmd });
-        results[i] = { ...item, status: "done", success: res.data.succeeded === res.data.vm_count, succeeded: res.data.succeeded, total: res.data.vm_count };
+        results[i] = { ...item, status: "done", success: res.data.succeeded === res.data.vm_count, succeeded: res.data.succeeded, total: res.data.vm_count, vmOutputs: res.data.results };
       } catch {
-        results[i] = { ...item, status: "failed", success: false, succeeded: 0, total: vmsRef.current.length };
+        results[i] = { ...item, status: "failed", success: false, succeeded: 0, total: vmsRef.current.length, vmOutputs: [] };
       }
       setWorkflowResults([...results]);
     }
@@ -915,19 +920,49 @@ export default function MultiVM() {
           {/* Workflow output */}
           {workflowResults.length > 0 && (
             <div style={{ marginTop: 14, borderTop: "1px solid #21262d", paddingTop: 12 }}>
-              <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Workflow Output</div>
-              {workflowResults.map((r, i) => (
-                <div key={i} style={{ marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ color: "#484f58", fontSize: 11, minWidth: 20 }}>{i + 1}.</span>
-                  <span style={{ color: r.status === "running" ? "#58a6ff" : r.success ? "#10b981" : "#ef4444", fontSize: 11, fontWeight: 700, minWidth: 32 }}>
-                    {r.status === "running" ? "..." : r.success ? "OK" : "FAIL"}
-                  </span>
-                  <span style={{ color: "#c9d1d9", fontSize: 12, flex: 1 }}>{r.label}</span>
-                  {r.status === "done" && (
-                    <span style={{ color: r.success ? "#10b981" : "#f59e0b", fontSize: 10 }}>{r.succeeded}/{r.total} VMs</span>
-                  )}
-                </div>
-              ))}
+              <div style={{ fontSize: 9, color: "#484f58", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Workflow Output — click a step to expand VM output</div>
+              {workflowResults.map((r, i) => {
+                const isExpanded = wfExpandedStep === i;
+                return (
+                  <div key={i} style={{ marginBottom: 4 }}>
+                    {/* Step header row — clickable when done */}
+                    <div
+                      onClick={() => r.status === "done" && setWfExpandedStep(isExpanded ? null : i)}
+                      style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", background: isExpanded ? "#0d1f33" : "#0d1117", border: `1px solid ${isExpanded ? "#1d4ed8" : "#21262d"}`, borderRadius: isExpanded ? "5px 5px 0 0" : 5, cursor: r.status === "done" ? "pointer" : "default", transition: "all 0.15s" }}>
+                      <span style={{ color: "#484f58", fontSize: 11, minWidth: 20 }}>{i + 1}.</span>
+                      <span style={{ color: r.status === "running" ? "#58a6ff" : r.success ? "#10b981" : "#ef4444", fontSize: 11, fontWeight: 700, minWidth: 34 }}>
+                        {r.status === "running" ? "●" : r.success ? "✓" : "✗"}
+                      </span>
+                      <span style={{ color: "#e6edf3", fontSize: 12, flex: 1, fontWeight: 500 }}>{r.label}</span>
+                      <span style={{ color: "#484f58", fontSize: 10, fontFamily: "monospace" }}>{r.cmd?.length > 28 ? r.cmd.slice(0, 28) + "…" : r.cmd}</span>
+                      {r.status === "done" && (
+                        <span style={{ color: r.success ? "#10b981" : "#f59e0b", fontSize: 10, fontWeight: 600, minWidth: 48, textAlign: "right" }}>{r.succeeded}/{r.total} VMs</span>
+                      )}
+                      {r.status === "done" && (
+                        <span style={{ color: "#484f58", fontSize: 10 }}>{isExpanded ? "▲" : "▼"}</span>
+                      )}
+                    </div>
+
+                    {/* Expanded per-VM output */}
+                    {isExpanded && r.vmOutputs && (
+                      <div style={{ border: "1px solid #1d4ed8", borderTop: "none", borderRadius: "0 0 5px 5px", overflow: "hidden" }}>
+                        {r.vmOutputs.map((vo, vi) => (
+                          <div key={vi} style={{ borderTop: vi > 0 ? "1px solid #21262d" : "none", padding: "8px 10px", background: vo.success ? "#020d06" : "#110505" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: vo.success ? "#10b981" : "#ef4444", display: "inline-block", flexShrink: 0 }} />
+                              <span style={{ color: "#8b949e", fontSize: 11, fontWeight: 600 }}>{vo.host}</span>
+                              {!vo.success && vo.error && <span style={{ color: "#ef4444", fontSize: 10 }}>— {vo.error.slice(0, 60)}</span>}
+                            </div>
+                            <pre style={{ margin: 0, color: vo.success ? "#c9d1d9" : "#fca5a5", fontSize: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", lineHeight: 1.5, maxHeight: 160, overflowY: "auto", background: "transparent" }}>
+                              {(vo.output || vo.error || "(no output)").trim()}
+                            </pre>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
 
