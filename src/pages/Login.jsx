@@ -68,7 +68,7 @@ export default function Login() {
             fontSize: 14
           }}
         >
-          Don’t have an account?{" "}
+          Don't have an account?{" "}
           <span
             style={{
               color: "#2563eb",

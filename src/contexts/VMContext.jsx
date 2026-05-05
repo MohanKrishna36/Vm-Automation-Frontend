@@ -86,7 +86,6 @@ export const VMProvider = ({ children }) => {
       };
       
       setActiveSessions(prev => new Map(prev).set(vmId, session));
-      saveSessionsToStorage();
     };
 
     initializeSession(vmId, sessionData.host);
