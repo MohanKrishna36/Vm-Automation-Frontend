@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 
 import { useVM } from "../contexts/VMContext";
 
@@ -255,6 +255,24 @@ export default function Reports() {
 
 
   const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`);
+
+  const exportReportCSV = useCallback((run) => {
+    const cmds = run.sessionDetails?.allCommands || [];
+    const header = ["session","vm","command","success","execution_time_ms","timestamp"];
+    const rows = cmds.map(c => [
+      `"${(run.sessionName || "Unnamed").replace(/"/g,'""')}"`,
+      `"${run.vm}"`,
+      `"${c.command.replace(/"/g,'""')}"`,
+      c.success,
+      c.executionTime,
+      `"${new Date(c.timestamp).toISOString()}"`
+    ].join(","));
+    const csv = [header.join(","), ...rows].join("\n");
+    const a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = `report-${(run.sessionName || run.jobId).replace(/[^a-z0-9]/gi,"_").slice(0,30)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }, []);
 
 
 
@@ -560,7 +578,13 @@ export default function Reports() {
 
             <>
 
-              <h2>Run Details</h2>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                <h2 style={{ margin: 0 }}>Run Details</h2>
+                <button onClick={() => exportReportCSV(selected)}
+                  style={{ padding: "6px 14px", background: "#0d1b2e", border: "1px solid #1d4ed8", color: "#58a6ff", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", flexShrink: 0 }}>
+                  Export CSV
+                </button>
+              </div>
 
               <p className="muted">
 

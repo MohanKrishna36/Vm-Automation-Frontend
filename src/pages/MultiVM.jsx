@@ -1,6 +1,34 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import api from "../api";
+
+// ── helpers ────────────────────────────────────────────────────────────────────
+function copyText(text) {
+  if (navigator.clipboard) return navigator.clipboard.writeText(text).catch(() => {});
+  const el = document.createElement("textarea");
+  el.value = text; document.body.appendChild(el); el.select();
+  document.execCommand("copy"); document.body.removeChild(el);
+}
+
+function exportHistoryCSV(items, filename = "history.csv") {
+  const header = ["vm_host","command","category","success","execution_time_ms","executed_at"];
+  const rows = items.map(h => [
+    `"${h.vm_host}"`, `"${h.command.replace(/"/g,'""')}"`, h.category,
+    h.success, h.execution_time_ms ?? "", `"${h.executed_at}"`
+  ].join(","));
+  const csv = [header.join(","), ...rows].join("\n");
+  const a = document.createElement("a");
+  a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+  a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+// ── Nickname store ─────────────────────────────────────────────────────────────
+const getNicknames = () => { try { return JSON.parse(localStorage.getItem("vmNicknames") || "{}"); } catch { return {}; } };
+const setNickname  = (host, nick) => { const n = getNicknames(); if (nick.trim()) n[host] = nick.trim(); else delete n[host]; localStorage.setItem("vmNicknames", JSON.stringify(n)); };
+
+// ── Pinned quick actions ───────────────────────────────────────────────────────
+const getPinned = () => { try { return JSON.parse(localStorage.getItem("pinnedCmds") || "[]"); } catch { return []; } };
+const togglePin = (cmd) => { const p = getPinned(); const i = p.indexOf(cmd); if (i === -1) p.unshift(cmd); else p.splice(i, 1); localStorage.setItem("pinnedCmds", JSON.stringify(p.slice(0, 12))); return getPinned(); };
 
 const packages = [
   "git","curl","wget","nano","vim","htop","bash","openssh","screen","tmux",
@@ -121,6 +149,33 @@ export default function MultiVM() {
   // -- Workflow output expand state --
   const [wfExpandedStep, setWfExpandedStep] = useState(null); // step index or null
 
+  // -- Command palette (Ctrl+K) --
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const paletteRef = useRef(null);
+
+  // -- VM nicknames --
+  const [nicknames, setNicknames] = useState(getNicknames);
+  const [editingNick, setEditingNick] = useState(null); // vm.host or null
+  const [nickDraft, setNickDraft] = useState("");
+
+  // -- Session notes --
+  const [sessionNotes, setSessionNotes] = useState("");
+  const [showNotes, setShowNotes] = useState(false);
+
+  // -- Auto-refresh metrics --
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState(15); // seconds
+
+  // -- Pinned quick actions --
+  const [pinnedCmds, setPinnedCmds] = useState(getPinned);
+
+  // -- Broadcast diff view --
+  const [showDiff, setShowDiff] = useState(false);
+
+  // -- History: global search mode (no vm_id filter) --
+  const [historyGlobal, setHistoryGlobal] = useState(false);
+
   // -- Alerts --
   const [alertCount, setAlertCount] = useState(0);
 
@@ -154,13 +209,31 @@ export default function MultiVM() {
     }).catch(() => navigate("/dashboard"));
   }, []);
 
+  // ── Ctrl+K palette ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "k") {
+        e.preventDefault();
+        setPaletteOpen(p => {
+          if (!p) loadHistory(); // fetch fresh history when opening
+          return !p;
+        });
+        setPaletteQuery("");
+      }
+      if (e.key === "Escape") setPaletteOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // ── Metrics polling ────────────────────────────────────────────────────────
   useEffect(() => {
     if (vms.length === 0) return;
     vms.forEach(vm => fetchMetricsForVm(vm.id));
-    const iv = setInterval(() => { vmsRef.current.forEach(vm => fetchMetricsForVm(vm.id)); }, 15000);
+    if (!autoRefresh) return;
+    const iv = setInterval(() => { vmsRef.current.forEach(vm => fetchMetricsForVm(vm.id)); }, autoRefreshInterval * 1000);
     return () => clearInterval(iv);
-  }, [vms.length]);
+  }, [vms.length, autoRefresh, autoRefreshInterval]);
 
   // ── Saved workflows ────────────────────────────────────────────────────────
   useEffect(() => { loadSavedWorkflows(); }, []);
@@ -182,7 +255,7 @@ export default function MultiVM() {
   }, []);
 
   // ── History on open / filter change ───────────────────────────────────────
-  useEffect(() => { if (showHistory) loadHistory(); }, [showHistory, historyFilter]);
+  useEffect(() => { if (showHistory) loadHistory(); }, [showHistory, historyFilter, historyGlobal]);
   useEffect(() => {
     if (!showHistory) return;
     const t = setTimeout(() => loadHistory(), 400);
@@ -387,15 +460,24 @@ export default function MultiVM() {
     if (vmsRef.current.length === 0) return;
     setHistoryLoading(true);
     try {
-      const all = await Promise.all(vmsRef.current.map(vm => {
-        const p = new URLSearchParams({ limit: 30, offset: 0, vm_id: vm.id });
+      // Global search: one request across all VMs (no vm_id filter), search term required
+      if (historyGlobal && historySearch.trim()) {
+        const p = new URLSearchParams({ limit: 100, offset: 0, search: historySearch.trim() });
         if (historyFilter === "success") p.set("success", "true");
         if (historyFilter === "failed") p.set("success", "false");
-        if (historySearch.trim()) p.set("search", historySearch.trim());
-        return api.get(`/history/?${p}`).then(r => r.data).catch(() => []);
-      }));
-      const merged = all.flat().sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at));
-      setHistoryItems(merged);
+        const res = await api.get(`/history/?${p}`).then(r => r.data).catch(() => []);
+        setHistoryItems(res.sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at)));
+      } else {
+        const all = await Promise.all(vmsRef.current.map(vm => {
+          const p = new URLSearchParams({ limit: 30, offset: 0, vm_id: vm.id });
+          if (historyFilter === "success") p.set("success", "true");
+          if (historyFilter === "failed") p.set("success", "false");
+          if (historySearch.trim()) p.set("search", historySearch.trim());
+          return api.get(`/history/?${p}`).then(r => r.data).catch(() => []);
+        }));
+        const merged = all.flat().sort((a, b) => new Date(b.executed_at) - new Date(a.executed_at));
+        setHistoryItems(merged);
+      }
     } catch { /* */ } finally { setHistoryLoading(false); }
   };
 
@@ -453,7 +535,7 @@ export default function MultiVM() {
       const reportPayload = {
         session_id: `MULTI-${vmsRef.current.map(v => v.id).join("-")}-${now}`,
         vm_id: vmsRef.current[0].id,
-        session_name: sessionName.trim() || `Multi-VM (${vmsRef.current.map(v => v.host).join(", ")})`,
+        session_name: (sessionName.trim() || `Multi-VM (${vmsRef.current.map(v => v.host).join(", ")})`) + (sessionNotes.trim() ? ` | ${sessionNotes.trim().slice(0, 80)}` : ""),
         vm_host: vmsRef.current.map(v => v.host).join(", "),
         start_time: new Date(sessionStart).toISOString(),
         end_time: new Date(now).toISOString(),
@@ -491,6 +573,43 @@ export default function MultiVM() {
     }
   };
 
+  // ── Palette data ──────────────────────────────────────────────────────────
+  const paletteItems = useMemo(() => {
+    const q = paletteQuery.trim().toLowerCase();
+    const all = [
+      ...pinnedCmds.map(c => ({ label: c, cmd: c, cat: "pin", pinned: true })),
+      ...historyItems.slice(0, 20).map(h => ({ label: h.command, cmd: h.command, cat: h.category, pinned: false })),
+      { label:"Status", cmd:"hostname && uptime && free -m && df -h", cat:"sys" },
+      { label:"Memory", cmd:"free -m", cat:"sys" },
+      { label:"Disk", cmd:"df -h", cat:"sys" },
+      { label:"CPU Load", cmd:"cat /proc/loadavg", cat:"sys" },
+      { label:"Ping 8.8.8.8", cmd:"ping -c 4 8.8.8.8", cat:"net" },
+      { label:"Open Ports", cmd:"ss -tlnp", cat:"net" },
+      { label:"Process List", cmd:"ps aux | head -20", cat:"proc" },
+      { label:"Uptime", cmd:"uptime", cat:"sys" },
+    ];
+    const seen = new Set();
+    return all.filter(i => {
+      if (seen.has(i.cmd)) return false; seen.add(i.cmd);
+      return !q || i.label.toLowerCase().includes(q) || i.cmd.toLowerCase().includes(q);
+    }).slice(0, 12);
+  }, [paletteQuery, pinnedCmds, historyItems]);
+
+  // ── Broadcast diff ─────────────────────────────────────────────────────────
+  const broadcastDiff = useMemo(() => {
+    if (!broadcastResults?.results?.length) return null;
+    const outputs = broadcastResults.results.map(r => (r.output || "").trim());
+    const allSame = outputs.every(o => o === outputs[0]);
+    if (allSame) return null;
+    // Find lines that differ between VMs
+    return broadcastResults.results.map(r => {
+      const lines = (r.output || "").trim().split("\n");
+      const ref = broadcastResults.results[0].output?.trim().split("\n") || [];
+      const diffLines = lines.map((line, i) => ({ line, different: line !== (ref[i] ?? "") }));
+      return { host: r.host, diffLines, success: r.success };
+    });
+  }, [broadcastResults]);
+
   // ── Loading state ──────────────────────────────────────────────────────────
 
   if (vms.length === 0) {
@@ -518,6 +637,47 @@ export default function MultiVM() {
         ))}
       </div>
 
+      {/* ── COMMAND PALETTE ── */}
+      {paletteOpen && (
+        <div style={{ position:"fixed", inset:0, zIndex:10000, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"flex-start", justifyContent:"center", paddingTop:120 }}
+          onClick={e => { if (e.target === e.currentTarget) setPaletteOpen(false); }}>
+          <div ref={paletteRef} style={{ width:520, background:"#161b22", border:"1px solid #30363d", borderRadius:12, overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,0.8)" }}>
+            <div style={{ padding:"12px 16px", borderBottom:"1px solid #21262d", display:"flex", alignItems:"center", gap:10 }}>
+              <span style={{ color:"#484f58", fontSize:14 }}>⌘</span>
+              <input autoFocus value={paletteQuery} onChange={e => setPaletteQuery(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && paletteItems.length > 0) { setBroadcastCmd(paletteItems[0].cmd); setPaletteOpen(false); }
+                  if (e.key === "Escape") setPaletteOpen(false);
+                }}
+                placeholder="Search commands, history, workflows..."
+                style={{ flex:1, background:"transparent", border:"none", outline:"none", color:"#e6edf3", fontSize:15 }} />
+              <kbd style={{ background:"#21262d", border:"1px solid #30363d", borderRadius:4, padding:"1px 6px", fontSize:10, color:"#6b7280" }}>ESC</kbd>
+            </div>
+            {paletteItems.length === 0 ? (
+              <div style={{ padding:"24px 16px", color:"#484f58", fontSize:13, textAlign:"center" }}>No commands found</div>
+            ) : paletteItems.map((item, i) => (
+              <div key={item.cmd + i}
+                onClick={() => { setBroadcastCmd(item.cmd); setPaletteOpen(false); addToast(`Loaded: ${item.cmd.slice(0,40)}`, "ok"); }}
+                style={{ display:"flex", alignItems:"center", gap:10, padding:"10px 16px", cursor:"pointer", borderBottom:"1px solid #21262d", background: i === 0 ? "#0d1f33" : "transparent" }}
+                onMouseEnter={e => e.currentTarget.style.background = "#1c2a3a"}
+                onMouseLeave={e => e.currentTarget.style.background = i === 0 ? "#0d1f33" : "transparent"}>
+                {item.pinned && <span style={{ fontSize:10, color:"#f59e0b" }}>★</span>}
+                <span style={{ background: CMD_CAT_COLORS[item.cat] || "#6b7280", color:"#fff", fontSize:8, padding:"1px 6px", borderRadius:3, fontWeight:700, textTransform:"uppercase", flexShrink:0 }}>{item.cat}</span>
+                <span style={{ color:"#e6edf3", fontSize:13, fontFamily:"monospace", flex:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{item.cmd}</span>
+                <button onClick={e => { e.stopPropagation(); const p = togglePin(item.cmd); setPinnedCmds(p); }}
+                  style={{ background:"none", border:"none", color: getPinned().includes(item.cmd) ? "#f59e0b" : "#484f58", cursor:"pointer", fontSize:14, padding:"0 2px", flexShrink:0 }}>
+                  ★
+                </button>
+              </div>
+            ))}
+            <div style={{ padding:"8px 16px", background:"#0d1117", display:"flex", gap:16 }}>
+              <span style={{ fontSize:10, color:"#484f58" }}><kbd style={{ background:"#21262d", border:"1px solid #30363d", borderRadius:3, padding:"0 5px" }}>Enter</kbd> run on all VMs</span>
+              <span style={{ fontSize:10, color:"#484f58" }}><kbd style={{ background:"#21262d", border:"1px solid #30363d", borderRadius:3, padding:"0 5px" }}>★</kbd> pin to quick actions</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── SIDEBAR ── */}
       <aside className="sidebar">
         <h2 style={{ color: "#22c55e" }}>Multi-VM</h2>
@@ -543,6 +703,25 @@ export default function MultiVM() {
               {sessionName || "Click to name session..."}
             </div>
           )}
+        </div>
+
+        {/* Session notes */}
+        <div style={{ marginTop: 6 }}>
+          <button onClick={() => setShowNotes(s => !s)}
+            style={{ fontSize: 10, padding: "3px 10px", background: showNotes ? "#0d1b2e" : "#21262d", border: `1px solid ${showNotes ? "#1d4ed8" : "#30363d"}`, color: showNotes ? "#58a6ff" : "#6b7280", borderRadius: 5, cursor: "pointer", width: "100%" }}>
+            {showNotes ? "Hide Notes" : "Session Notes"}{sessionNotes.trim() ? " ●" : ""}
+          </button>
+          {showNotes && (
+            <textarea value={sessionNotes} onChange={e => setSessionNotes(e.target.value)}
+              placeholder="What are you doing in this session? Why? Any context for the report..."
+              style={{ marginTop: 4, width: "100%", minHeight: 70, background: "#010409", border: "1px solid #30363d", borderRadius: 5, padding: "6px 8px", color: "#c9d1d9", fontSize: 11, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box", outline: "none" }} />
+          )}
+        </div>
+
+        {/* Ctrl+K shortcut hint */}
+        <div onClick={() => { loadHistory(); setPaletteOpen(true); }} style={{ marginTop: 6, padding: "6px 10px", background: "#0d1117", border: "1px solid #21262d", borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 11, color: "#6b7280" }}>Command palette</span>
+          <kbd style={{ background: "#21262d", border: "1px solid #30363d", borderRadius: 4, padding: "1px 7px", fontSize: 10, color: "#8b949e" }}>Ctrl K</kbd>
         </div>
 
         {/* Release / Disconnect buttons — right below session name */}
@@ -572,6 +751,27 @@ export default function MultiVM() {
               </div>
             );
           })}
+        </div>
+
+        {/* Auto-refresh control */}
+        <div style={{ marginTop: 8, padding: "8px 12px", background: "#0d1117", border: "1px solid #21262d", borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 10, color: "#6b7280" }}>Auto-refresh</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button onClick={() => setAutoRefresh(s => !s)}
+              style={{ fontSize: 9, padding: "2px 8px", background: autoRefresh ? "#051a12" : "#161b22", border: `1px solid ${autoRefresh ? "#065f46" : "#30363d"}`, color: autoRefresh ? "#3fb950" : "#6b7280", borderRadius: 10, cursor: "pointer" }}>
+              {autoRefresh ? "ON" : "OFF"}
+            </button>
+            {autoRefresh && (
+              <select value={autoRefreshInterval} onChange={e => setAutoRefreshInterval(Number(e.target.value))}
+                style={{ background: "#0d1117", border: "1px solid #30363d", borderRadius: 4, padding: "1px 4px", color: "#8b949e", fontSize: 10, outline: "none", cursor: "pointer" }}>
+                <option value={5}>5s</option>
+                <option value={10}>10s</option>
+                <option value={15}>15s</option>
+                <option value={30}>30s</option>
+                <option value={60}>60s</option>
+              </select>
+            )}
+          </div>
         </div>
 
         {/* Alert bell */}
@@ -622,8 +822,8 @@ export default function MultiVM() {
             <input
               value={broadcastCmd}
               onChange={e => setBroadcastCmd(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && runBroadcast()}
-              placeholder="Run this command on ALL VMs simultaneously..."
+              onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || !e.shiftKey)) runBroadcast(); }}
+              placeholder="Run this command on ALL VMs simultaneously...  (Enter or Ctrl+Enter to run)"
               style={{ flex: 1, background: "#010409", border: "1px solid #30363d", borderRadius: 6, padding: "9px 14px", color: "#c9d1d9", fontSize: 13, fontFamily: "monospace", outline: "none" }}
             />
             <button onClick={() => runBroadcast()} disabled={broadcastLoading || !broadcastCmd.trim() || workflowRunning}
@@ -642,7 +842,24 @@ export default function MultiVM() {
                 {c}
               </button>
             ))}
+            <button onClick={() => setPaletteOpen(true)}
+              style={{ fontSize: 10, padding: "2px 9px", background: "#0d1b2e", border: "1px solid #1d4ed8", color: "#58a6ff", borderRadius: 4, cursor: "pointer" }}>
+              ⌘ More (Ctrl+K)
+            </button>
           </div>
+
+          {/* Pinned quick actions */}
+          {pinnedCmds.length > 0 && (
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6, paddingTop: 6, borderTop: "1px solid #21262d" }}>
+              <span style={{ fontSize: 9, color: "#f59e0b", fontWeight: 700, textTransform: "uppercase", alignSelf: "center", marginRight: 2 }}>★ Pinned</span>
+              {pinnedCmds.map(cmd => (
+                <button key={cmd} onClick={() => runBroadcast(cmd)}
+                  style={{ fontSize: 10, padding: "2px 9px", background: "#1a1205", border: "1px solid #78350f", color: "#f59e0b", borderRadius: 4, cursor: "pointer", fontFamily: "monospace", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {cmd.length > 28 ? cmd.slice(0, 28) + "…" : cmd}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Live per-VM progress panel */}
           {liveProgress && (
@@ -657,8 +874,14 @@ export default function MultiVM() {
                   </span>
                 )}
                 <code style={{ fontSize: 10, color: "#484f58" }}>$ {liveProgress.command}</code>
-                <button onClick={() => { setLiveProgress(null); setBroadcastResults(null); }}
-                  style={{ marginLeft: "auto", background: "none", border: "none", color: "#484f58", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>&times;</button>
+                {broadcastDiff && (
+                  <button onClick={() => setShowDiff(s => !s)}
+                    style={{ fontSize: 10, padding: "2px 8px", background: showDiff ? "#1c2a1c" : "#21262d", border: `1px solid ${showDiff ? "#238636" : "#30363d"}`, color: showDiff ? "#3fb950" : "#8b949e", borderRadius: 4, cursor: "pointer", marginLeft: "auto" }}>
+                    {showDiff ? "Hide Diff" : "Show Diff ⚡"}
+                  </button>
+                )}
+                <button onClick={() => { setLiveProgress(null); setBroadcastResults(null); setShowDiff(false); }}
+                  style={{ background: "none", border: "none", color: "#484f58", cursor: "pointer", fontSize: 18, lineHeight: 1, marginLeft: broadcastDiff ? 4 : "auto" }}>&times;</button>
               </div>
               {vms.map(vm => {
                 const st = liveProgress.vms[vm.id];
@@ -681,6 +904,12 @@ export default function MultiVM() {
                       )}
                       <span style={{ color: "#e6edf3", fontSize: 12, fontFamily: "monospace", flex: 1, fontWeight: 600 }}>{vm.host}</span>
                       {isDone && <span style={{ fontSize: 9, color: "#484f58" }}>{broadcastExpandedHost === vm.host ? "hide" : "show output"}</span>}
+                      {isDone && (
+                        <button onClick={e => { e.stopPropagation(); copyText(st.output || st.error || ""); addToast("Copied output", "ok"); }}
+                          style={{ background:"none", border:"1px solid #30363d", borderRadius:3, color:"#484f58", cursor:"pointer", fontSize:9, padding:"1px 6px", flexShrink:0 }}>
+                          copy
+                        </button>
+                      )}
                     </div>
                     {isDone && broadcastExpandedHost === vm.host && (
                       <pre style={{ background: "#010409", margin: 0, padding: "8px 12px", fontSize: 10, color: ok ? "#8b949e" : "#f87171", maxHeight: 180, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
@@ -690,6 +919,25 @@ export default function MultiVM() {
                   </div>
                 );
               })}
+              {/* Diff view */}
+              {showDiff && broadcastDiff && (
+                <div style={{ marginBottom: 10, padding: "10px 14px", background: "#010409", border: "1px solid #238636", borderRadius: 6 }}>
+                  <div style={{ fontSize: 9, color: "#3fb950", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Output diff — highlighted lines differ from {broadcastDiff[0]?.host}</div>
+                  {broadcastDiff.map((vm, vi) => (
+                    <div key={vi} style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: "#8b949e", fontWeight: 600, marginBottom: 3 }}>{vm.host}</div>
+                      <pre style={{ margin: 0, fontSize: 10, fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all", background: "transparent" }}>
+                        {vm.diffLines.map((l, li) => (
+                          <span key={li} style={{ display: "block", background: l.different ? "#2a1f00" : "transparent", color: l.different ? "#fbbf24" : "#6b7280", padding: l.different ? "0 4px" : "0" }}>
+                            {l.different ? "≠ " : "  "}{l.line}
+                          </span>
+                        ))}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {broadcastResults?.skipped?.length > 0 && (
                 <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 8, padding: "8px 12px", background: "#1c1505", border: "1px solid #78350f", borderRadius: 6 }}>
                   Skipped {broadcastResults.skipped.length}: {broadcastResults.skipped.map(s => s.host || `VM #${s.vm_id}`).join(", ")}
@@ -1238,10 +1486,16 @@ export default function MultiVM() {
             </div>
             <div style={{ display: "flex", gap: 6 }}>
               {showHistory && historyItems.length > 0 && (
-                <button onClick={clearHistory}
-                  style={{ fontSize: 10, padding: "3px 10px", background: "#2d0a0a", border: "1px solid #7f1d1d", color: "#f87171", borderRadius: 4, cursor: "pointer" }}>
-                  Clear All
-                </button>
+                <>
+                  <button onClick={() => exportHistoryCSV(historyItems, `history-${new Date().toISOString().slice(0,10)}.csv`)}
+                    style={{ fontSize: 10, padding: "3px 10px", background: "#0d1b2e", border: "1px solid #1d4ed8", color: "#58a6ff", borderRadius: 4, cursor: "pointer" }}>
+                    CSV
+                  </button>
+                  <button onClick={clearHistory}
+                    style={{ fontSize: 10, padding: "3px 10px", background: "#2d0a0a", border: "1px solid #7f1d1d", color: "#f87171", borderRadius: 4, cursor: "pointer" }}>
+                    Clear
+                  </button>
+                </>
               )}
               <button onClick={() => setShowHistory(s => !s)}
                 style={{ fontSize: 10, padding: "3px 10px", background: showHistory ? "#0d1b2e" : "#21262d", border: `1px solid ${showHistory ? "#1d4ed8" : "#30363d"}`, color: showHistory ? "#58a6ff" : "#8b949e", borderRadius: 4, cursor: "pointer" }}>
@@ -1253,8 +1507,12 @@ export default function MultiVM() {
           {showHistory && (
             <>
               <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
-                <input value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder="Search commands..."
-                  style={{ flex: 1, background: "#010409", border: "1px solid #30363d", borderRadius: 6, padding: "6px 10px", color: "#c9d1d9", fontSize: 12, outline: "none" }} />
+                <input value={historySearch} onChange={e => setHistorySearch(e.target.value)} placeholder={historyGlobal ? "Global search across all VMs..." : "Search this session's VMs..."}
+                  style={{ flex: 1, background: "#010409", border: `1px solid ${historyGlobal ? "#1d4ed8" : "#30363d"}`, borderRadius: 6, padding: "6px 10px", color: "#c9d1d9", fontSize: 12, outline: "none" }} />
+                <button onClick={() => setHistoryGlobal(s => !s)} title="Toggle global search (all VMs ever)"
+                  style={{ fontSize: 9, padding: "4px 8px", background: historyGlobal ? "#0d1b2e" : "#21262d", border: `1px solid ${historyGlobal ? "#1d4ed8" : "#30363d"}`, color: historyGlobal ? "#58a6ff" : "#6b7280", borderRadius: 4, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  {historyGlobal ? "Global ✓" : "Global"}
+                </button>
                 <div style={{ display: "flex", gap: 3 }}>
                   {[["all","All"],["success","Success"],["failed","Failed"]].map(([f, label]) => (
                     <button key={f} onClick={() => setHistoryFilter(f)}
@@ -1297,6 +1555,14 @@ export default function MultiVM() {
                           <span style={{ color: "#484f58", fontSize: 10, flexShrink: 0 }}>
                             {isToday ? timeStr : ts.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + timeStr}
                           </span>
+                          <button onClick={() => { const p = togglePin(entry.command); setPinnedCmds(p); addToast(p.includes(entry.command) ? "Pinned to quick actions" : "Unpinned", "ok"); }}
+                            style={{ fontSize: 9, padding: "2px 6px", background: "none", border: "none", color: pinnedCmds.includes(entry.command) ? "#f59e0b" : "#484f58", cursor: "pointer", flexShrink: 0 }} title="Pin to quick actions">
+                            ★
+                          </button>
+                          <button onClick={() => { copyText(entry.output || entry.error || entry.command); addToast("Copied", "ok"); }}
+                            style={{ fontSize: 9, padding: "2px 6px", background: "none", border: "1px solid #30363d", color: "#484f58", borderRadius: 3, cursor: "pointer", flexShrink: 0 }}>
+                            copy
+                          </button>
                           <button
                             onClick={() => { setBroadcastCmd(entry.command); window.scrollTo({ top: 0, behavior: "smooth" }); }}
                             style={{ fontSize: 9, padding: "2px 7px", background: "#0d1b2e", border: "1px solid #1d4ed8", color: "#58a6ff", borderRadius: 4, cursor: "pointer", flexShrink: 0 }}>
@@ -1327,13 +1593,29 @@ export default function MultiVM() {
 
                 {/* Header */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
                     <span style={{ width: 8, height: 8, borderRadius: "50%", background: metricsError ? "#ef4444" : metrics ? "#22c55e" : "#484f58", flexShrink: 0 }} />
-                    <span style={{ color: "#e6edf3", fontFamily: "monospace", fontWeight: 700, fontSize: 14 }}>{vm.host}</span>
+                    {editingNick === vm.host ? (
+                      <input autoFocus value={nickDraft} onChange={e => setNickDraft(e.target.value)}
+                        onBlur={() => { setNickname(vm.host, nickDraft); setNicknames(getNicknames()); setEditingNick(null); }}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { setNickname(vm.host, nickDraft); setNicknames(getNicknames()); setEditingNick(null); } }}
+                        style={{ background: "#010409", border: "1px solid #30363d", borderRadius: 4, padding: "2px 6px", color: "#e6edf3", fontSize: 13, fontFamily: "monospace", fontWeight: 700, outline: "none", width: 140 }} />
+                    ) : (
+                      <div>
+                        {nicknames[vm.host] && <div style={{ color: "#e6edf3", fontWeight: 700, fontSize: 14, lineHeight: 1.1 }}>{nicknames[vm.host]}</div>}
+                        <div onClick={() => { setEditingNick(vm.host); setNickDraft(nicknames[vm.host] || ""); }}
+                          style={{ color: nicknames[vm.host] ? "#6b7280" : "#e6edf3", fontFamily: "monospace", fontWeight: nicknames[vm.host] ? 400 : 700, fontSize: nicknames[vm.host] ? 10 : 14, cursor: "pointer", title: "Click to rename" }}>
+                          {vm.host}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {metrics && !metricsLoading && (
-                      <span style={{ fontSize: 9, color: "#10b981", background: "#051a12", border: "1px solid #065f46", borderRadius: 10, padding: "2px 7px" }}>Live 15s</span>
+                      <span style={{ fontSize: 9, color: autoRefresh ? "#10b981" : "#6b7280", background: autoRefresh ? "#051a12" : "#161b22", border: `1px solid ${autoRefresh ? "#065f46" : "#30363d"}`, borderRadius: 10, padding: "2px 7px", cursor: "pointer" }}
+                        onClick={() => setAutoRefresh(s => !s)} title={autoRefresh ? "Auto-refresh on — click to pause" : "Auto-refresh off — click to enable"}>
+                        {autoRefresh ? `Live ${autoRefreshInterval}s` : "Paused"}
+                      </span>
                     )}
                     {metricsLoading && <span style={{ fontSize: 9, color: "#484f58" }}>fetching...</span>}
                     <button onClick={() => fetchMetricsForVm(vm.id)} disabled={metricsLoading}
